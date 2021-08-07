@@ -5,11 +5,11 @@ echo "sudo apt install wireguard -y"
 echo "usage example: sudo bash NordLynxExtractKeys.sh uk"
 echo ""
 echo ""
-echo "== Now extracting Wireguard Configurtion infomation =="
 echo "== Setting NordVPN to use NordLynx =="
 nordvpn set technology NordLynx > /dev/null 2>&1
 echo "== Connecting to NordVPN Server =="
 nordvpn c $1 > /dev/null 2>&1
+echo "== Now extracting Wireguard Configurtion infomation =="
 current_server=$(nordvpn status | grep "Current server:" |awk '{print $3 "\t" $4}')
 interface=$(sudo wg show | grep "interface")
 public_key=$(sudo wg show | grep "public key")
