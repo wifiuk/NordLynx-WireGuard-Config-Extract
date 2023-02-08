@@ -10,7 +10,7 @@ nordvpn set technology NordLynx > /dev/null 2>&1
 echo "== Connecting to NordVPN Server =="
 nordvpn c $1 > /dev/null 2>&1
 echo "== Now extracting Wireguard Configurtion infomation =="
-current_server=$(nordvpn status | grep "Current server:" |awk '{print $3 "\t" $4}')
+current_server=$(nordvpn status | grep "Hostname:" |awk '{print $2}')
 public_key=$(sudo wg show | grep "public key")
 listening_port=$(sudo wg showconf nordlynx | grep "ListenPort")
 private_key=$(sudo wg showconf nordlynx | grep "PrivateKey")
