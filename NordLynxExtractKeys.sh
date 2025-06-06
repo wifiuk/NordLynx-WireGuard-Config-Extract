@@ -3,9 +3,14 @@ echo -e "\nCode is from : https://github.com/wifiuk/NordLynx-WireGuard-Config-Ex
 echo "NordVPN needs to be installed and your credentials added for this to work."
 echo "If you have not already installed wireguard, please do so before running this tool."
 echo "sudo apt install wireguard -y"
-echo "usage example: sudo bash $(basename $0) uk"
 echo ""
 echo ""
+# Check to make sure you have the right privileges
+if [[ $(id -u) -ne 0 ]]; then
+    echo "ERROR: Incorrect usage."
+    echo "usage example: sudo bash $(basename $0) uk"
+    exit -1
+fi
 
 # location to write files to.
 file_save_dir="."
