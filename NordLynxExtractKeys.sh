@@ -3,12 +3,17 @@ echo -e "\nCode is from : https://github.com/wifiuk/NordLynx-WireGuard-Config-Ex
 echo "NordVPN needs to be installed and your credentials added for this to work."
 echo "If you have not already installed wireguard, please do so before running this tool."
 echo "sudo apt install wireguard -y"
-echo "usage example: sudo bash $(basename $0) uk"
 echo ""
 echo ""
+# Check to make sure you have the right privileges
+if [[ $(id -u) -ne 0 ]]; then
+    echo "ERROR: Incorrect usage."
+    echo "usage example: sudo bash $(basename $0) uk"
+    exit -1
+fi
 
 # location to write files to.
-file_save_dir="/tmp"
+file_save_dir="."
 # flag to indicate that we 'force' connected to nordvpn.
 flag_system_triggered_connection=0 
 # Check if 'nordvpnd' daemon is running
@@ -46,9 +51,9 @@ fi
 echo "== Now extracting Wireguard Configurtion infomation =="
 
 nordvpn_status=$(nordvpn status)
-current_server_name=$(awk '/Server:\s+/ {print $2 $3 }' <<< "$nordvpn_status")
-current_server_city=$(awk '/City:/ {print $NF}' <<< "$nordvpn_status")
-current_server_country=$(awk '/Country:/ {print $NF}' <<< "$nordvpn_status")
+current_server_name=$(cat <<< "$nordvpn_status" | grep -i server | sed 's/Server:\s\+//' | tr ' ' '_')
+current_server_city=$(cat <<< "$nordvpn_status" | grep -i city | sed 's/City:\s\+//' | tr ' ' '_')
+current_server_country=$(cat <<< "$nordvpn_status" | grep -i country | sed 's/Country:\s\+//' | tr ' ' '_')
 current_server=$(awk '/Hostname:/ {print $NF}' <<< "$nordvpn_status")
 
 wireguard_status=$(sudo wg show)
