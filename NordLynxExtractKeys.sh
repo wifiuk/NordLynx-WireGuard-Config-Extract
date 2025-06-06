@@ -8,7 +8,7 @@ echo ""
 echo ""
 
 # location to write files to.
-file_save_dir="/tmp"
+file_save_dir="."
 # flag to indicate that we 'force' connected to nordvpn.
 flag_system_triggered_connection=0 
 # Check if 'nordvpnd' daemon is running
