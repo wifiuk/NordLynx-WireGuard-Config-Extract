@@ -6,7 +6,7 @@ echo "sudo apt install wireguard -y"
 echo ""
 echo ""
 # Check to make sure you have the right privileges
-if [[ $(id -u) -ne 0 ]]; then
+if [ $(id -u) -ne 0 ]; then
     echo "ERROR: Incorrect usage."
     echo "usage example: sudo bash $(basename $0) uk"
     exit -1
@@ -56,6 +56,7 @@ current_server_city=$(cat <<< "$nordvpn_status" | grep -i city | sed 's/City:\s\
 current_server_country=$(cat <<< "$nordvpn_status" | grep -i country | sed 's/Country:\s\+//' | tr ' ' '_')
 current_server=$(awk '/Hostname:/ {print $NF}' <<< "$nordvpn_status")
 
+
 wireguard_status=$(sudo wg show)
 public_key=$(awk '/public key:/ {print $NF}' <<< "$wireguard_status")
 
@@ -67,6 +68,15 @@ private_key=$(awk '/PrivateKey/ {print $NF}' <<< "$wg_conf")
 allowed_ip=$(awk '/AllowedIPs/ {print $NF}' <<< "$wg_conf")
 endpoint=$(awk '/Endpoint/ {print $NF}' <<< "$wg_conf")
 keepalive=$(awk '/PersistentKeepalive/ {print $NF}' <<< "$wg_conf")
+
+# Disconnect if connected to vpn.
+# Reason we do this is because we need to determine 
+# the 'default' route in order to determine/guess the local lan subnet.
+# if somone knows a better way??
+nordvpn_cmd_output=$(nordvpn d)
+local_lan_device=$(route -n| grep -E '^0\.0\.0\.0' | awk '{print $NF}'| xargs ip addr show dev)
+local_lan=$(cat <<< "$local_lan_device" | awk '/inet/ {print $2}')
+
 
 # a copy of the output is sent here.
 save_file="${file_save_dir}/${current_server}.txt"
@@ -84,10 +94,13 @@ PrivateKey: ${private_key}
 PublicKey: ${public_key}
 AllowedIPs: ${allowed_ip}
 Endpoint: ${endpoint}
-keepalive: ${keepalive}
+Keepalive: ${keepalive}
 
 [Address]
 inet: ${inet}
+
+[Route]
+LocalLan: ${local_lan}
 EOF
 
 echo ""
@@ -95,7 +108,8 @@ echo ""
 echo "== File saved : $save_file =="
 
 
-if [[ "$flag_system_triggered_connection" == "1" ]]; then
+if [ "$flag_system_triggered_connection" == "1" ]; then
+    # No Longer necessary but a good check.
     echo "== Disconnecting from NordVPN =="
     sudo nordvpn d > /dev/null 2>&1
 fi
