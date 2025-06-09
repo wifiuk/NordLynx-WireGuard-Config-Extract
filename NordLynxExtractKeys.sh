@@ -77,6 +77,10 @@ nordvpn_cmd_output=$(nordvpn d)
 local_lan_device=$(route -n| grep -E '^0\.0\.0\.0' | awk '{print $NF}'| xargs ip addr show dev)
 local_lan=$(cat <<< "$local_lan_device" | awk '/inet/ {print $2}')
 
+# We need to get the router's IP
+# in order to do this we need the default route
+# when the vpn is down.
+router_ip=$(route -n | awk '/^0\.0\.0\.0/ {print $2}')
 
 # a copy of the output is sent here.
 save_file="${file_save_dir}/${current_server}.txt"
@@ -101,6 +105,7 @@ inet: ${inet}
 
 [Route]
 LocalLan: ${local_lan}
+RouterIP: ${router_ip}
 EOF
 
 echo ""
