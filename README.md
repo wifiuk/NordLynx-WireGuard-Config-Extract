@@ -26,7 +26,7 @@ This script will:
 Once this is done, it will
 * Dump the information to the screen
 * Automatically disconnect from NordVPN
-* Dump the information into a file into the same directory as the sript using the currently connected server name.
+* Dump the information into a file into the same directory as the script using the currently connected server name.
 
 If you are using PfSense and Wireguard you can also follow this guide to help you set it up.
 
