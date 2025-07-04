@@ -37,3 +37,7 @@ If you are using PfSense and Wireguard you can also follow this guide to help yo
 
 ![Screenshot](ScreenshotNordVPN.png)
 
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
