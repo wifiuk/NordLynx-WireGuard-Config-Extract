@@ -4,17 +4,8 @@
 # USER CONFIGURATION SECTION
 # =============================================
 
-# >>>>> API Keys and Script Settings <<<<<
-
-# Your AbuseIPDB API key (get one free at https://www.abuseipdb.com/account/api)
-abuseipdb_api_key="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # Register free at https://www.abuseipdb.com/account/api
-
-# Your Spamhaus Lookup API key (see https://www.spamhaus.com/apikey/)
-spamhaus_api_key="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
 # Maximum attempts to find a clean NordVPN exit IP before giving up
 max_attempts=10
-
 # ------------------------------
 # Colour codes
 RED='\033[0;31m'; GREEN='\033[0;32m'; LIGHT_GREEN='\033[1;32m'
@@ -27,131 +18,130 @@ success_msg(){ printf "${GREEN}%b${NC}\n" "$1"; }
 info_msg(){    printf "${BLUE}%b${NC}\n" "$1"; }
 warning_msg(){ printf "${YELLOW}%b${NC}\n" "$1"; }
 
-# ----- AbuseIPDB API lookup -----
-abuseipdb_check(){
-    local ip="$1"
-    [[ -z "$abuseipdb_api_key" || "$abuseipdb_api_key" == "xxx" ]] && { echo "API key not set"; return 2; }
-    local resp
-    resp=$(curl -4 -sG https://api.abuseipdb.com/api/v2/check \
-      --data-urlencode "ipAddress=$ip" \
-      --data-urlencode "maxAgeInDays=90" \
-      -H "Key: $abuseipdb_api_key" \
-      -H "Accept: application/json" \
-      --connect-timeout 10 \
-      --max-time 15 2>/dev/null)
-    
-    if [[ $? -ne 0 || -z "$resp" ]]; then
-        echo "Connection error"; return 2
+# Live HTTPS blocklist checks: 0 = no listing, 1 = listed, 2 = unknown.
+# Query positive and negative controls so blocked resolvers cannot look clean.
+dnsbl_lookup(){
+    local query="$1" reply status
+    if [[ "$query" == *.bl.spamcop.net ]]; then
+        reply=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+            --get --data-urlencode "name=$query" --data-urlencode 'type=A' \
+            https://dns.google/resolve 2>/dev/null) || return 2
+        printf '%s' "$reply" | python3 -c '
+import json, sys
+try:
+    response = json.load(sys.stdin)
+    status = response["Status"]
+    answers = [a["data"] for a in response.get("Answer", []) if a.get("type") == 1]
+    result = 0 if status == 3 else (1 if status == 0 and "127.0.0.2" in answers else 2)
+except (ValueError, KeyError, TypeError):
+    result = 2
+sys.exit(result)
+'
+        return $?
     fi
-    
-    # Check for API errors
-    if echo "$resp" | grep -q '"errors"'; then
-        echo "API error"; return 2
-    fi
-    
-    local reports=$(echo "$resp" | grep -o '"totalReports":[0-9]*' | grep -o '[0-9]*')
-    local score=$(echo "$resp"   | grep -o '"abuseConfidenceScore":[0-9]*' | grep -o '[0-9]*')
-    [[ -z "$reports" ]] && { echo "Parse error"; return 2; }
-    (( reports>0 )) && { echo "⚠️ Listed ($reports reports, score:$score)"; return 1; }
-    echo "Not listed"; return 0
+    return 2
 }
 
-# ----- Spamhaus API with improved fallback -----
-spamhaus_check(){
-    local ip="$1"
-    
-    # Try API first if key is provided
-    if [[ -n "$spamhaus_api_key" && "$spamhaus_api_key" != "xxx" ]]; then
-        local url="https://apibl.spamhaus.net/lookup/v1/zen/$ip"
-        local raw
-        raw=$(curl -4 -s -w "\n%{http_code}" \
-          -H "Authorization: Bearer $spamhaus_api_key" \
-          -H "Accept: application/json" \
-          --connect-timeout 10 \
-          --max-time 15 \
-          "$url" 2>/dev/null)
-        
-        if [[ $? -eq 0 && -n "$raw" ]]; then
-            local code="${raw##*$'\n'}"
-            local body="${raw%$'\n'*}"
-            
-            if [[ "$code" == "200" ]]; then
-                local codes
-                codes=$(echo "$body" | grep -oP '"resp":\[\K[^\]]*' 2>/dev/null)
-                [[ -z "$codes" ]] && codes="unknown"
-                echo "⚠️ Listed (API: $codes)"; return 1
-            elif [[ "$code" == "404" ]]; then
-                echo "Not listed"; return 0
-            fi
-        fi
-    fi
-    
-    # Fallback to alternative DNSBL or skip
-    warning_msg "Spamhaus API unavailable - skipping Spamhaus check"
-    echo "Skipped (API unavailable)"; return 2
+dnsbl_check(){
+    local ip="$1" zone="$2" result a b c d
+    dnsbl_lookup "2.0.0.127.$zone"; result=$?
+    [[ $result == 1 ]] || { echo 'Unknown (resolver failed listed control)'; return 2; }
+    dnsbl_lookup "1.0.0.127.$zone"; result=$?
+    [[ $result == 0 ]] || { echo 'Unknown (resolver failed unlisted control)'; return 2; }
+    IFS=. read -r a b c d <<< "$ip"
+    dnsbl_lookup "$d.$c.$b.$a.$zone"; result=$?
+    case $result in
+        0) echo 'Not listed in this blocklist' ;;
+        1) echo 'Listed in this blocklist' ;;
+        2) echo 'Unknown (DNS error or refused lookup)' ;;
+    esac
+    return "$result"
 }
 
-# ----- Additional blacklist checks -----
-# Check against other reliable DNSBLs
-additional_dnsbl_check(){
-    local ip="$1"
-    local listed=0
-    
-    # Check Barracuda
-    IFS=. read -r a b c d <<<"$ip"
-    if timeout 5 dig +short A "$d.$c.$b.$a.b.barracudacentral.org" 2>/dev/null | grep -qE '^127\.'; then
-        echo "⚠️ Listed (Barracuda)"; return 1
-    fi
-    
-    # Check SURBL (for completeness, though it's more for domains)
-    if timeout 5 dig +short A "$d.$c.$b.$a.multi.surbl.org" 2>/dev/null | grep -qE '^127\.'; then
-        echo "⚠️ Listed (SURBL)"; return 1
-    fi
-    
-    echo "Not listed"; return 0
+# Fetch each HTTPS feed once per script run; reuse it across VPN retries.
+# Spamhaus DROP is a network abuse list, distinct from Spamhaus ZEN.
+load_online_feeds(){
+    [[ "${feeds_loaded:-0}" == 1 ]] && return
+    drop_feed=$(curl --fail --silent --show-error --location --connect-timeout 5 --max-time 20 \
+        https://www.spamhaus.org/drop/drop_v4.json 2>/dev/null) || drop_feed=''
+    et_feed=$(curl --fail --silent --show-error --location --connect-timeout 5 --max-time 20 \
+        https://rules.emergingthreats.net/blockrules/compromised-ips.txt 2>/dev/null) || et_feed=''
+    feeds_loaded=1
 }
 
-# ----- Combined blacklist check -----
+feed_check(){
+    local ip="$1" format="$2" data="$3"
+    printf '%s' "$data" | python3 -c '
+import ipaddress, json, sys
+try:
+    ip = ipaddress.IPv4Address(sys.argv[1])
+    networks = []
+    for line in sys.stdin:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if sys.argv[2] == "json":
+            item = json.loads(line)
+            if "cidr" not in item:
+                if "timestamp" in item and "copyright" in item:
+                    continue
+                raise ValueError("Unexpected feed record")
+            line = item["cidr"]
+        networks.append(ipaddress.IPv4Network(line, strict=True))
+    if not networks:
+        raise ValueError("Empty feed")
+    matches = [str(n) for n in networks if ip in n]
+    if matches:
+        print("Listed: " + ", ".join(matches))
+        sys.exit(1)
+    print("Not listed (checked %d entries)" % len(networks))
+except (ValueError, KeyError, TypeError):
+    print("Unknown (download failed or invalid feed)")
+    sys.exit(2)
+' "$ip" "$format"
+}
+
 check_ip_blacklists(){
-    info_msg "Checking if your VPN exit IP is on major blacklists..."
-    local ip
-    ip=$(curl -4 -m5 -s https://api.ipify.org 2>/dev/null)
-    
+    local ip="${1:-}" endpoint octet
     if [[ -z "$ip" ]]; then
-        # Try alternative IP detection services
-        ip=$(curl -4 -m5 -s https://ipecho.net/plain 2>/dev/null)
-        [[ -z "$ip" ]] && ip=$(curl -4 -m5 -s https://icanhazip.com 2>/dev/null)
+        for endpoint in https://api.ipify.org https://icanhazip.com; do
+            ip=$(curl -4 --fail --silent --show-error --connect-timeout 5 --max-time 10 "$endpoint" 2>/dev/null) || { ip=''; continue; }
+            [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && break
+            ip=''
+        done
     fi
-    
-    [[ -z "$ip" ]] && { warning_msg "Could not determine public IP"; return 2; }
-    
-    # Validate IP format
-    if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-        warning_msg "Invalid IP format received: $ip"; return 2
-    fi
-    
-    printf "\n${CYAN}Current public IP: ${LIGHT_GREEN}%s${NC}\n\n" "$ip"
-    
-    local a_status s_status d_status a_ret s_ret d_ret
-    a_status=$(abuseipdb_check "$ip"); a_ret=$?
-    s_status=$(spamhaus_check   "$ip"); s_ret=$?
-    d_status=$(additional_dnsbl_check "$ip"); d_ret=$?
-    
-    printf "${YELLOW}%-15s | %-30s${NC}\n" "Service" "Status"
-    printf "${YELLOW}%-15s | %-30s${NC}\n" "---------------" "------------------------------"
-    printf "%-15s | %-30s\n" "AbuseIPDB" "$a_status"
-    printf "%-15s | %-30s\n" "Spamhaus" "$s_status"
-    printf "%-15s | %-30s\n" "Other DNSBLs" "$d_status"
-    printf "\n"
-    
-    # Consider IP clean if AbuseIPDB is clean AND either Spamhaus is clean OR unavailable
-    # AND additional DNSBLs are clean
-    if [[ $a_ret -eq 0 && ($s_ret -eq 0 || $s_ret -eq 2) && $d_ret -eq 0 ]]; then
-        return 0
-    else
-        return 1
-    fi
+    [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || { warning_msg 'Could not determine a valid public IPv4 address'; return 2; }
+    local -a octets
+    IFS=. read -r -a octets <<< "$ip"
+    for octet in "${octets[@]}"; do
+        (( 10#$octet <= 255 )) || { warning_msg 'Invalid IPv4 address'; return 2; }
+    done
+    printf '\nPublic IPv4: %s\n' "$ip"
+    load_online_feeds
+    local result listed=0 unknown=0
+    printf '%-25s | ' 'SpamCop (HTTPS)'
+    dnsbl_check "$ip" bl.spamcop.net; result=$?
+    [[ $result == 1 ]] && listed=1
+    [[ $result == 2 ]] && unknown=1
+    printf '%-25s | ' 'Spamhaus DROP (HTTPS)'
+    feed_check "$ip" json "$drop_feed"; result=$?
+    [[ $result == 1 ]] && listed=1
+    [[ $result == 2 ]] && unknown=1
+    printf '%-25s | ' 'ET compromised IPs (HTTPS)'
+    feed_check "$ip" text "$et_feed"; result=$?
+    [[ $result == 1 ]] && listed=1
+    [[ $result == 2 ]] && unknown=1
+    (( listed )) && return 1
+    (( unknown )) && return 2
+    return 0
 }
+
+# Read-only lookup mode; does not run VPN setup or extract keys.
+if [[ "${1:-}" == '--check-ip' ]]; then
+    command_exists curl && command_exists python3 || { error_msg 'curl and python3 are required'; exit 2; }
+    check_ip_blacklists "${2:-}"
+    exit $?
+fi
 
 # ----- Connect until a clean IP is found -----
 nord_connect_until_clean(){
@@ -191,9 +181,14 @@ nord_connect_until_clean(){
         # Wait a moment for connection to stabilize
         sleep 3
         
-        if check_ip_blacklists; then
-            success_msg "Clean exit IP obtained."
+        check_ip_blacklists
+        local lookup_result=$?
+        if [[ $lookup_result -eq 0 ]]; then
+            success_msg "Exit IP is not listed in any of the three checked blocklists."
             return 0
+        elif [[ $lookup_result -eq 2 ]]; then
+            warning_msg "Reputation checks are inconclusive. Stopping without retrying or claiming this IP is clean."
+            return 2
         else
             warning_msg "Exit IP blacklisted — disconnecting & retrying..."
             sudo nordvpn d &>/dev/null
@@ -214,7 +209,7 @@ printf "${PURPLE}==============================================${NC}\n\n"
 
 # Software checks
 info_msg "Checking for required software..."
-for tool in nordvpn wg curl dig; do
+for tool in nordvpn wg curl python3; do
     if ! command_exists "$tool"; then
         error_msg "$tool is not installed. Please install it."
         case "$tool" in
@@ -228,14 +223,6 @@ for tool in nordvpn wg curl dig; do
 done
 success_msg "All required software is installed."
 printf "\n"
-
-# Check API keys
-if [[ "$abuseipdb_api_key" == "xxx" ]]; then
-    warning_msg "AbuseIPDB API key not configured - checks will be skipped"
-fi
-if [[ "$spamhaus_api_key" == "xxx" ]]; then
-    warning_msg "Spamhaus API key not configured - using fallback methods"
-fi
 
 # NordLynx self-healing
 sudo -v || { error_msg "Need sudo privileges."; exit 1; }
@@ -274,7 +261,7 @@ edit_existing_connection(){
     info_msg "Editing an existing WireGuard connection..."
     read -rp "$(printf "${YELLOW}Enter the country code or server (e.g., 'uk' or 'uk1740'): ${NC}")" vpn_target
     
-    nord_connect_until_clean "$vpn_target"
+    nord_connect_until_clean "$vpn_target" || exit $?
     
     info_msg "Extracting WireGuard configuration..."
     local wg_conf listening_port endpoint endpoint_ip
@@ -326,7 +313,7 @@ create_new_connection(){
     info_msg "Creating a new WireGuard connection..."
     read -rp "$(printf "${YELLOW}Enter the country code or server (e.g., 'uk' or 'uk1740'): ${NC}")" vpn_target
     
-    nord_connect_until_clean "$vpn_target"
+    nord_connect_until_clean "$vpn_target" || exit $?
     
     info_msg "Extracting WireGuard configuration..."
     local wg_conf private_key listening_port endpoint endpoint_ip public_key
